@@ -223,6 +223,11 @@ open_bpf(char *if_name)
 
 	log_debug("Open BPF file descriptor: %d", fd);
 
+	/* Non-blocking read */
+	int flags = fcntl(wan.bpf_fd, F_GETFL, 0);
+	if (flags == -1 || fcntl(wan.bpf_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+		error("Failed to set O_NONBLOCK: %s", strerror(errno));
+	}
 	/* Set immediate mode so packets are processed as they arrive. */
 	immediate = 1;
 	if (ioctl(fd, BIOCIMMEDIATE, &immediate) == -1)
@@ -595,7 +600,7 @@ void
 nd_reflect_loop(void)
 {
 	struct pollfd		 pfd;
-	int			 nfds, timeout = INFTIM;
+	int			 nfds, timeout = 5000;
 	ssize_t		 length;
 	u_char			 *buf, *buf_limit;
 	struct bpf_hdr		 *bh;
@@ -619,11 +624,15 @@ nd_reflect_loop(void)
 		length = read(wan.bpf_fd, (char *)wan.bpf_buf, wan.buf_max);
 
 		/* Don't choke when we get ptraced */
-		if (length == -1 && errno == EINTR) {
-			log_debug("EINTR while read.");
-			goto again;
-		}
 		if (length == -1) {
+			if (errno == EINTR) {
+				log_debug("EINTR while read.");
+				goto again;
+			}
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				log_debug("No data available on non-blocking read.");
+				continue;
+			}
 			log_warning("Failed to read: %s", strerror(errno));
 			continue;
 		}
